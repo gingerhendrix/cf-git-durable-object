@@ -1,17 +1,19 @@
 // src/bun-sqlite-adapter.ts
-import { Database, Statement, type DatabaseOpenOptions } from 'bun:sqlite';
+import { Database } from 'bun:sqlite';
 import type { SyncSqliteDatabase, SyncSqliteIterator } from './interfaces';
 
 export class BunSqliteAdapter implements SyncSqliteDatabase {
     private db: Database;
 
-    constructor(options?: string | DatabaseOpenOptions | Buffer | Uint8Array) {
-        // Default to in-memory if no options provided
-        this.db = new Database(options ?? ':memory:');
-        // Optional: Enable WAL for file DBs if desired
-        // if (typeof options === 'string' && options !== ':memory:') {
-        //     this.db.exec("PRAGMA journal_mode = WAL;");
-        // }
+    constructor(db: Database) {
+        this.db = db;
+    }
+
+    /**
+     * Create a new BunSqliteAdapter with an in-memory database
+     */
+    static createInMemory(): BunSqliteAdapter {
+        return new BunSqliteAdapter(new Database(':memory:'));
     }
 
     exec(sql: string, params?: any[]): void {

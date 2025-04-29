@@ -1,6 +1,7 @@
 // tests/bun-sqlite-adapter.test.ts
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BunSqliteAdapter } from '../src/bun-sqlite-adapter';
+import { Database } from 'bun:sqlite';
 import type { SyncSqliteDatabase } from '../src/interfaces';
 
 describe('BunSqliteAdapter', () => {
@@ -8,7 +9,7 @@ describe('BunSqliteAdapter', () => {
 
   beforeEach(() => {
     // Use new in-memory DB for each test
-    db = new BunSqliteAdapter(':memory:');
+    db = new BunSqliteAdapter(new Database(':memory:'));
     // Setup common schema if needed
     db.exec(`
       CREATE TABLE users (
