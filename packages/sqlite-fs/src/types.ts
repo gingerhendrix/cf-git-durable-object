@@ -21,4 +21,7 @@ export interface Stats {
   ctimeMs?: number;
   birthtimeMs?: number;
   dev?: number; ino?: number; nlink?: number; uid?: number; gid?: number;
+  rdev?: number;
+  blksize?: number;
+  blocks?: number;
 }
