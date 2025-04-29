@@ -19,10 +19,6 @@
       );
       `;
 
-      // Optional: Add index creation if anticipating performance needs later
-      // export const SQL_INDEXES = [
-      //   `CREATE INDEX IF NOT EXISTS idx_files_parent ON files (dirname(path));` // Requires dirname function or careful LIKE queries
-      // ];
       ```
   *   *Rationale:* Centralizes the database schema definition required by the `SQLiteFSAdapter`. Adding `CHECK` constraints improves data integrity.
 
