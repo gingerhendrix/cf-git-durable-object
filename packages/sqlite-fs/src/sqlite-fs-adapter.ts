@@ -1,7 +1,7 @@
 // src/sqlite-fs-adapter.ts
 import { createError } from "./error-utils";
 import type { SyncSqliteDatabase } from "./interfaces";
-import { basename, normalize } from "./path-utils";
+import { basename, dirname, normalize } from "./path-utils";
 import { SQL_SCHEMA } from "./schema";
 import { createStats, type DbFileRow } from "./stats-utils";
 import type { FSError, Stats } from "./types";
@@ -150,10 +150,202 @@ export class SQLiteFSAdapter {
     }
   }
 
-  // --- Write Methods (Stubs for later) ---
-  // async writeFile(...) { throw new Error('Not implemented'); }
-  // async mkdir(...) { throw new Error('Not implemented'); }
-  // async unlink(...) { throw new Error('Not implemented'); }
-  // async rmdir(...) { throw new Error('Not implemented'); }
+  // --- Write Methods ---
+  async mkdir(path: string, options?: { mode?: number }): Promise<void> {
+    const dbPath = this.getDbPath(path);
+    const mode = options?.mode ?? 0o755; // Default directory mode
+    const mtime = new Date().toISOString();
+
+    try {
+      // Check if path already exists
+      try {
+        this.db.one("SELECT type FROM files WHERE path = ?", [dbPath]);
+        // If we get here, the path exists
+        throw createError("EEXIST", path, "mkdir");
+      } catch (error) {
+        // If error is not "No rows found", rethrow it
+        if (!isNotFoundError(error)) {
+          throw error;
+        }
+        // Otherwise, path doesn't exist, continue
+      }
+
+      // Check parent directory
+      const parentPath = dirname(dbPath);
+      if (parentPath !== "." && parentPath !== "/") {
+        try {
+          const parent = this.db.one<{ type: string }>(
+            "SELECT type FROM files WHERE path = ?",
+            [parentPath]
+          );
+          if (parent.type !== "directory") {
+            throw createError("ENOTDIR", path, "mkdir");
+          }
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            throw createError("ENOENT", path, "mkdir");
+          }
+          throw error;
+        }
+      }
+
+      // Create the directory
+      this.db.exec(
+        "INSERT INTO files (path, type, mode, mtime, content) VALUES (?, 'directory', ?, ?, NULL)",
+        [dbPath, mode, mtime]
+      );
+    } catch (error) {
+      // If we already created a specific error, re-throw it
+      if ((error as FSError).code) {
+        throw error;
+      }
+      // Other database errors
+      throw createError("EIO", path, "mkdir");
+    }
+  }
+
+  async writeFile(
+    path: string,
+    data: string | Buffer | Uint8Array,
+    options?: { encoding?: string; mode?: number }
+  ): Promise<void> {
+    const dbPath = this.getDbPath(path);
+    const mode = options?.mode ?? 0o644; // Default file mode
+    const mtime = new Date().toISOString();
+
+    // Convert data to Buffer if it's a string
+    const buffer = typeof data === "string"
+      ? Buffer.from(data, options?.encoding as BufferEncoding)
+      : Buffer.from(data);
+
+    try {
+      // Check parent directory
+      const parentPath = dirname(dbPath);
+      if (parentPath !== "." && parentPath !== "/") {
+        try {
+          const parent = this.db.one<{ type: string }>(
+            "SELECT type FROM files WHERE path = ?",
+            [parentPath]
+          );
+          if (parent.type !== "directory") {
+            throw createError("ENOTDIR", path, "writeFile");
+          }
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            throw createError("ENOENT", path, "writeFile");
+          }
+          throw error;
+        }
+      }
+
+      // Check if path exists and is a directory
+      try {
+        const existing = this.db.one<{ type: string }>(
+          "SELECT type FROM files WHERE path = ?",
+          [dbPath]
+        );
+        if (existing.type === "directory") {
+          throw createError("EISDIR", path, "writeFile");
+        }
+      } catch (error) {
+        // If path doesn't exist, that's fine for writeFile
+        if (!isNotFoundError(error)) {
+          throw error;
+        }
+      }
+
+      // Write the file (create or overwrite)
+      this.db.exec(
+        "INSERT OR REPLACE INTO files (path, type, mode, mtime, content) VALUES (?, 'file', ?, ?, ?)",
+        [dbPath, mode, mtime, buffer]
+      );
+    } catch (error) {
+      // If we already created a specific error, re-throw it
+      if ((error as FSError).code) {
+        throw error;
+      }
+      // Other database errors
+      throw createError("EIO", path, "writeFile");
+    }
+  }
+
+  async unlink(path: string): Promise<void> {
+    const dbPath = this.getDbPath(path);
+
+    try {
+      // Check if path exists and get its type
+      const file = this.db.one<{ type: string }>(
+        "SELECT type FROM files WHERE path = ?",
+        [dbPath]
+      );
+
+      // If it's a directory, throw EPERM
+      if (file.type === "directory") {
+        throw createError("EPERM", path, "unlink");
+      }
+
+      // Delete the file
+      this.db.exec("DELETE FROM files WHERE path = ?", [dbPath]);
+    } catch (error) {
+      // If we already created a specific error, re-throw it
+      if ((error as FSError).code) {
+        throw error;
+      }
+      
+      if (isNotFoundError(error)) {
+        throw createError("ENOENT", path, "unlink");
+      }
+      
+      // Other database errors
+      throw createError("EIO", path, "unlink");
+    }
+  }
+
+  async rmdir(path: string): Promise<void> {
+    const dbPath = this.getDbPath(path);
+
+    try {
+      // Check if path exists and is a directory
+      const file = this.db.one<{ type: string }>(
+        "SELECT type FROM files WHERE path = ?",
+        [dbPath]
+      );
+
+      if (file.type !== "directory") {
+        throw createError("ENOTDIR", path, "rmdir");
+      }
+
+      // Check if directory is empty
+      try {
+        const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
+        this.db.one<{ path: string }>(
+          "SELECT path FROM files WHERE path LIKE ? LIMIT 1",
+          [`${dirPrefix}%`]
+        );
+        // If we get here, directory has at least one child
+        throw createError("ENOTEMPTY", path, "rmdir");
+      } catch (error) {
+        // If "No rows found", directory is empty, continue
+        if (!isNotFoundError(error)) {
+          throw error;
+        }
+      }
+
+      // Delete the directory
+      this.db.exec("DELETE FROM files WHERE path = ?", [dbPath]);
+    } catch (error) {
+      // If we already created a specific error, re-throw it
+      if ((error as FSError).code) {
+        throw error;
+      }
+      
+      if (isNotFoundError(error)) {
+        throw createError("ENOENT", path, "rmdir");
+      }
+      
+      // Other database errors
+      throw createError("EIO", path, "rmdir");
+    }
+  }
 }
 
