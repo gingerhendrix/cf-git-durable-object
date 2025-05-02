@@ -15,9 +15,62 @@ export class SQLiteFSAdapter {
   private db: SyncSqliteDatabase;
   private rootDir: string;
 
+  // Add methods directly to the adapter for isomorphic-git compatibility
+  public readFile: (path: string, options?: { encoding?: string }) => Promise<Buffer | string>;
+  public writeFile: (path: string, data: string | Buffer | Uint8Array, options?: { encoding?: string; mode?: number }) => Promise<void>;
+  public unlink: (path: string) => Promise<void>;
+  public readdir: (path: string) => Promise<string[]>;
+  public mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
+  public rmdir: (path: string) => Promise<void>;
+  public stat: (path: string) => Promise<Stats>;
+  public lstat: (path: string) => Promise<Stats>;
+  public readlink: (path: string, options?: { encoding?: string }) => Promise<Buffer>;
+  public symlink: (target: string, path: string) => Promise<void>;
+  
+  // Add promises property for isomorphic-git compatibility
+  public promises: {
+    readFile: (path: string, options?: { encoding?: string }) => Promise<Buffer | string>;
+    writeFile: (path: string, data: string | Buffer | Uint8Array, options?: { encoding?: string; mode?: number }) => Promise<void>;
+    unlink: (path: string) => Promise<void>;
+    readdir: (path: string) => Promise<string[]>;
+    mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
+    rmdir: (path: string) => Promise<void>;
+    stat: (path: string) => Promise<Stats>;
+    lstat: (path: string) => Promise<Stats>;
+    readlink: (path: string, options?: { encoding?: string }) => Promise<Buffer>;
+    symlink: (target: string, path: string) => Promise<void>;
+  };
+
   constructor(db: SyncSqliteDatabase, rootDir: string = ".") {
     this.db = db;
     this.rootDir = rootDir;
+    
+    // Bind methods directly to the adapter for isomorphic-git compatibility
+    this.readFile = this._readFile.bind(this);
+    this.writeFile = this._writeFile.bind(this);
+    this.unlink = this._unlink.bind(this);
+    this.readdir = this._readdir.bind(this);
+    this.mkdir = this._mkdir.bind(this);
+    this.rmdir = this._rmdir.bind(this);
+    this.stat = this._stat.bind(this);
+    this.lstat = this._lstat.bind(this);
+    this.readlink = this._readlink.bind(this);
+    this.symlink = this._symlink.bind(this);
+    
+    // Initialize the promises object with bound methods
+    this.promises = {
+      readFile: this._readFile.bind(this),
+      writeFile: this._writeFile.bind(this),
+      unlink: this._unlink.bind(this),
+      readdir: this._readdir.bind(this),
+      mkdir: this._mkdir.bind(this),
+      rmdir: this._rmdir.bind(this),
+      stat: this._stat.bind(this),
+      lstat: this._lstat.bind(this),
+      readlink: this._readlink.bind(this),
+      symlink: this._symlink.bind(this)
+    };
+    
     // Ensure schema exists
     try {
       this.db.exec(SQL_SCHEMA);
@@ -33,7 +86,7 @@ export class SQLiteFSAdapter {
   }
 
   // --- Read Methods ---
-  async lstat(path: string): Promise<Stats> {
+  async _lstat(path: string): Promise<Stats> {
     const dbPath = this.getDbPath(path);
     try {
       const row = this.db.one<DbFileRow>(
@@ -50,12 +103,12 @@ export class SQLiteFSAdapter {
     }
   }
 
-  async stat(path: string): Promise<Stats> {
+  async _stat(path: string): Promise<Stats> {
     // For this adapter, stat behaves identically to lstat
-    return this.lstat(path);
+    return this._lstat(path);
   }
 
-  async readFile(
+  async _readFile(
     path: string,
     options?: { encoding?: string },
   ): Promise<Buffer | string> {
@@ -96,7 +149,7 @@ export class SQLiteFSAdapter {
     }
   }
 
-  async readdir(path: string): Promise<string[]> {
+  async _readdir(path: string): Promise<string[]> {
     const dbPath = this.getDbPath(path);
 
     // First check if the path exists and is a directory
@@ -151,7 +204,7 @@ export class SQLiteFSAdapter {
   }
 
   // --- Write Methods ---
-  async mkdir(path: string, options?: { mode?: number }): Promise<void> {
+  async _mkdir(path: string, options?: { mode?: number }): Promise<void> {
     const dbPath = this.getDbPath(path);
     const mode = options?.mode ?? 0o755; // Default directory mode
     const mtime = new Date().toISOString();
@@ -204,7 +257,7 @@ export class SQLiteFSAdapter {
     }
   }
 
-  async writeFile(
+  async _writeFile(
     path: string,
     data: string | Buffer | Uint8Array,
     options?: { encoding?: string; mode?: number }
@@ -269,7 +322,7 @@ export class SQLiteFSAdapter {
     }
   }
 
-  async unlink(path: string): Promise<void> {
+  async _unlink(path: string): Promise<void> {
     const dbPath = this.getDbPath(path);
 
     try {
@@ -301,7 +354,7 @@ export class SQLiteFSAdapter {
     }
   }
 
-  async rmdir(path: string): Promise<void> {
+  async _rmdir(path: string): Promise<void> {
     const dbPath = this.getDbPath(path);
 
     try {
@@ -346,6 +399,17 @@ export class SQLiteFSAdapter {
       // Other database errors
       throw createError("EIO", path, "rmdir");
     }
+  }
+  
+  // --- Symlink Methods (Stubs) ---
+  async _readlink(path: string, options?: { encoding?: string }): Promise<Buffer> {
+    // This is a stub implementation since we don't support symlinks
+    throw createError("EINVAL", path, "readlink");
+  }
+  
+  async _symlink(target: string, path: string): Promise<void> {
+    // This is a stub implementation since we don't support symlinks
+    throw createError("EPERM", path, "symlink");
   }
 }
 
