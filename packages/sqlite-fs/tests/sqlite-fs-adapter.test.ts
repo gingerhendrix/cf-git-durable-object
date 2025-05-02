@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from 'bun:sqlite';
 import { BunSqliteAdapter } from '../src/bun-sqlite-adapter';
 import { SQLiteFSAdapter } from '../src/sqlite-fs-adapter';
+import { CHUNK_SIZE } from '../src/schema';
 
 describe('SQLiteFSAdapter', () => {
   let dbAdapter: BunSqliteAdapter;
@@ -14,14 +15,14 @@ describe('SQLiteFSAdapter', () => {
     dbAdapter = new BunSqliteAdapter(db);
     fs = new SQLiteFSAdapter(dbAdapter);
 
-    // Set up test file system
+    // Set up test file system with the new schema
     dbAdapter.exec(`
-      INSERT INTO files (path, type, content, mode, mtime) VALUES 
-        ('.', 'directory', NULL, 16877, '2023-01-01T00:00:00Z'),
-        ('file.txt', 'file', X'48656C6C6F20576F726C64', 33188, '2023-01-01T00:00:00Z'),
-        ('dir', 'directory', NULL, 16877, '2023-01-01T00:00:00Z'),
-        ('dir/nested.txt', 'file', X'4E6573746564206669676C65', 33188, '2023-01-01T00:00:00Z'),
-        ('emptyDir', 'directory', NULL, 16877, '2023-01-01T00:00:00Z')
+      INSERT INTO file_chunks (path, chunk_index, type, content, mode, mtime, total_size) VALUES 
+        ('.', 0, 'directory', NULL, 16877, '2023-01-01T00:00:00Z', 0),
+        ('file.txt', 0, 'file', X'48656C6C6F20576F726C64', 33188, '2023-01-01T00:00:00Z', 11),
+        ('dir', 0, 'directory', NULL, 16877, '2023-01-01T00:00:00Z', 0),
+        ('dir/nested.txt', 0, 'file', X'4E6573746564206669676C65', 33188, '2023-01-01T00:00:00Z', 13),
+        ('emptyDir', 0, 'directory', NULL, 16877, '2023-01-01T00:00:00Z', 0)
     `);
   });
 
@@ -35,7 +36,7 @@ describe('SQLiteFSAdapter', () => {
       const stats = await fs.lstat('file.txt');
       expect(stats.isFile()).toBe(true);
       expect(stats.isDirectory()).toBe(false);
-      expect(stats.size).toBeGreaterThan(0);
+      expect(stats.size).toBe(11); // "Hello World" length
       expect(stats.mode).toBe(33188); // 0o100644
       expect(stats.mtimeMs).toBe(Date.parse('2023-01-01T00:00:00Z'));
     });
@@ -58,7 +59,7 @@ describe('SQLiteFSAdapter', () => {
     it('should return Stats for an existing file', async () => {
       const stats = await fs.stat('file.txt');
       expect(stats.isFile()).toBe(true);
-      expect(stats.size).toBeGreaterThan(0);
+      expect(stats.size).toBe(11); // "Hello World" length
     });
 
     it('should throw ENOENT for a non-existent path', async () => {
@@ -217,6 +218,79 @@ describe('SQLiteFSAdapter', () => {
     it('writeFile: should throw EISDIR if path is an existing directory', async () => {
       await expect(fs.writeFile('dir', 'data')).rejects.toThrowError(/EISDIR/);
     });
+
+    // New test for chunking
+    it('writeFile: should store small files in a single chunk', async () => {
+      const data = 'small file content';
+      await fs.writeFile('smallFile.txt', data);
+      
+      // Verify file was written correctly
+      const content = await fs.readFile('smallFile.txt', { encoding: 'utf8' });
+      expect(content).toBe(data);
+      
+      // Check that only one chunk was created
+      const chunks = dbAdapter.all<{ chunk_index: number }>(
+        "SELECT chunk_index FROM file_chunks WHERE path = ? ORDER BY chunk_index",
+        ['smallFile.txt']
+      );
+      expect(chunks.length).toBe(1);
+      expect(chunks[0].chunk_index).toBe(0);
+    });
+
+    // Test for large file chunking
+    it('writeFile: should split large files into multiple chunks', async () => {
+      // Create a file slightly larger than CHUNK_SIZE
+      const chunkSize = CHUNK_SIZE;
+      const largeData = Buffer.alloc(chunkSize + 1000, 'A');
+      
+      await fs.writeFile('largeFile.txt', largeData);
+      
+      // Verify file was written correctly
+      const content = await fs.readFile('largeFile.txt');
+      expect(content.length).toBe(largeData.length);
+      expect(content).toEqual(largeData);
+      
+      // Check that multiple chunks were created
+      const chunks = dbAdapter.all<{ chunk_index: number }>(
+        "SELECT chunk_index FROM file_chunks WHERE path = ? ORDER BY chunk_index",
+        ['largeFile.txt']
+      );
+      expect(chunks.length).toBe(2); // Should be split into 2 chunks
+      expect(chunks[0].chunk_index).toBe(0);
+      expect(chunks[1].chunk_index).toBe(1);
+      
+      // Verify total_size is correct
+      const stats = await fs.lstat('largeFile.txt');
+      expect(stats.size).toBe(largeData.length);
+    });
+
+    // Test for very large file chunking
+    it('writeFile: should handle very large files with multiple chunks', async () => {
+      // Create a file that will be split into 3 chunks
+      const chunkSize = CHUNK_SIZE;
+      const veryLargeData = Buffer.alloc(chunkSize * 2 + 1000, 'B');
+      
+      await fs.writeFile('veryLargeFile.txt', veryLargeData);
+      
+      // Verify file was written correctly
+      const content = await fs.readFile('veryLargeFile.txt');
+      expect(content.length).toBe(veryLargeData.length);
+      expect(content).toEqual(veryLargeData);
+      
+      // Check that multiple chunks were created
+      const chunks = dbAdapter.all<{ chunk_index: number }>(
+        "SELECT chunk_index FROM file_chunks WHERE path = ? ORDER BY chunk_index",
+        ['veryLargeFile.txt']
+      );
+      expect(chunks.length).toBe(3); // Should be split into 3 chunks
+      expect(chunks[0].chunk_index).toBe(0);
+      expect(chunks[1].chunk_index).toBe(1);
+      expect(chunks[2].chunk_index).toBe(2);
+      
+      // Verify total_size is correct
+      const stats = await fs.lstat('veryLargeFile.txt');
+      expect(stats.size).toBe(veryLargeData.length);
+    });
   });
 
   // unlink tests
@@ -232,6 +306,33 @@ describe('SQLiteFSAdapter', () => {
 
     it('unlink: should throw EPERM when trying to unlink a directory', async () => {
       await expect(fs.unlink('dir')).rejects.toThrowError(/EPERM/);
+    });
+
+    // New test for chunking
+    it('unlink: should delete all chunks of a large file', async () => {
+      // Create a large file first
+      const largeData = Buffer.alloc(CHUNK_SIZE + 1000, 'X');
+      await fs.writeFile('largeFileToDelete.txt', largeData);
+      
+      // Verify file exists and has multiple chunks
+      const chunksBeforeDelete = dbAdapter.all<{ chunk_index: number }>(
+        "SELECT chunk_index FROM file_chunks WHERE path = ?",
+        ['largeFileToDelete.txt']
+      );
+      expect(chunksBeforeDelete.length).toBeGreaterThan(1);
+      
+      // Delete the file
+      await fs.unlink('largeFileToDelete.txt');
+      
+      // Verify all chunks are deleted
+      const chunksAfterDelete = dbAdapter.all<{ chunk_index: number }>(
+        "SELECT chunk_index FROM file_chunks WHERE path = ?",
+        ['largeFileToDelete.txt']
+      );
+      expect(chunksAfterDelete.length).toBe(0);
+      
+      // Verify file doesn't exist
+      await expectPathToNotExist('largeFileToDelete.txt');
     });
   });
 

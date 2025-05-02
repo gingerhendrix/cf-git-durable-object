@@ -2,7 +2,7 @@
 import { createError } from "./error-utils";
 import type { SyncSqliteDatabase } from "./interfaces";
 import { basename, dirname, normalize } from "./path-utils";
-import { SQL_SCHEMA } from "./schema";
+import { CHUNK_SIZE, SQL_SCHEMA } from "./schema";
 import { createStats, type DbFileRow } from "./stats-utils";
 import type { FSError, Stats } from "./types";
 
@@ -76,7 +76,19 @@ export class SQLiteFSAdapter {
       this.db.exec(SQL_SCHEMA);
     } catch (e) {
       console.error("Failed to initialize SQLiteFSAdapter schema", e);
-      // Non-fatal error, schema might already exist
+      
+      // Check if the old schema exists (files table)
+      try {
+        // If we can query the old table, we need to handle backward compatibility
+        const oldSchemaExists = this.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'");
+        if (oldSchemaExists) {
+          console.log("Using legacy 'files' table for backward compatibility");
+          // We'll handle the old schema in each method
+        }
+      } catch (oldSchemaError) {
+        // If this also fails, both schemas are missing or the DB is read-only
+        console.error("Could not check for legacy schema", oldSchemaError);
+      }
     }
   }
 
@@ -89,11 +101,39 @@ export class SQLiteFSAdapter {
   async _lstat(path: string): Promise<Stats> {
     const dbPath = this.getDbPath(path);
     try {
-      const row = this.db.one<DbFileRow>(
-        "SELECT type, mode, mtime, content FROM files WHERE path = ?",
-        [dbPath],
-      );
-      return createStats(row);
+      try {
+        // Try the new schema first
+        const row = this.db.one<DbFileRow>(
+          "SELECT type, mode, mtime, content, total_size FROM file_chunks WHERE path = ? AND chunk_index = 0",
+          [dbPath],
+        );
+        return createStats(row);
+      } catch (e) {
+        if (e.message?.includes("no such table")) {
+          // Fall back to the old schema
+          const oldRow = this.db.one<{
+            type: string;
+            mode: number;
+            mtime: string;
+            content: Buffer | Uint8Array | null;
+          }>(
+            "SELECT type, mode, mtime, content FROM files WHERE path = ?",
+            [dbPath],
+          );
+          
+          // Convert to the new format
+          const row: DbFileRow = {
+            type: oldRow.type as 'file' | 'directory' | 'symlink',
+            mode: oldRow.mode,
+            mtime: oldRow.mtime,
+            content: oldRow.content,
+            total_size: oldRow.type === 'directory' ? 0 : (oldRow.content?.length ?? 0)
+          };
+          
+          return createStats(row);
+        }
+        throw e;
+      }
     } catch (error) {
       if (isNotFoundError(error)) {
         throw createError("ENOENT", path, "lstat");
@@ -115,25 +155,68 @@ export class SQLiteFSAdapter {
     const dbPath = this.getDbPath(path);
 
     try {
-      // Get the file data
-      const row = this.db.one<{
-        type: string;
-        content: Buffer | Uint8Array | null;
-      }>("SELECT type, content FROM files WHERE path = ?", [dbPath]);
+      try {
+        // Try the new schema first
+        // First check if the file exists and get its type
+        const metadataRow = this.db.one<{
+          type: string;
+          total_size: number;
+        }>("SELECT type, total_size FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
 
-      // Check if it's a directory
-      if (row.type === "directory") {
-        throw createError("EISDIR", path, "readFile");
+        // Check if it's a directory
+        if (metadataRow.type === "directory") {
+          throw createError("EISDIR", path, "readFile");
+        }
+
+        // Get all chunks for this file, ordered by chunk_index
+        const chunkRows = this.db.all<{
+          content: Buffer | Uint8Array | null;
+        }>("SELECT content FROM file_chunks WHERE path = ? ORDER BY chunk_index ASC", [dbPath]);
+
+        // Collect all content chunks
+        const contentChunks: Buffer[] = [];
+        for (const row of chunkRows) {
+          if (row.content) {
+            contentChunks.push(Buffer.from(row.content));
+          }
+        }
+
+        // Concatenate all chunks into a single buffer
+        const buffer = Buffer.concat(contentChunks);
+
+        // Return string if encoding is specified, otherwise return Buffer
+        if (options?.encoding) {
+          return buffer.toString(options.encoding as BufferEncoding);
+        }
+        return buffer;
+      } catch (e) {
+        if (e.code === "EISDIR") {
+          throw e; // Re-throw EISDIR errors
+        }
+        
+        if (e.message?.includes("no such table")) {
+          // Fall back to the old schema
+          const row = this.db.one<{
+            type: string;
+            content: Buffer | Uint8Array | null;
+          }>("SELECT type, content FROM files WHERE path = ?", [dbPath]);
+
+          // Check if it's a directory
+          if (row.type === "directory") {
+            throw createError("EISDIR", path, "readFile");
+          }
+
+          // Ensure content is a Buffer
+          const buffer = Buffer.from(row.content || new Uint8Array());
+
+          // Return string if encoding is specified, otherwise return Buffer
+          if (options?.encoding) {
+            return buffer.toString(options.encoding as BufferEncoding);
+          }
+          return buffer;
+        }
+        throw e;
       }
-
-      // Ensure content is a Buffer
-      const buffer = Buffer.from(row.content || new Uint8Array());
-
-      // Return string if encoding is specified, otherwise return Buffer
-      if (options?.encoding) {
-        return buffer.toString(options.encoding as BufferEncoding);
-      }
-      return buffer;
     } catch (error) {
       // If we already created a specific error (like EISDIR), re-throw it
       if ((error as FSError).code) {
@@ -151,20 +234,49 @@ export class SQLiteFSAdapter {
 
   async _readdir(path: string): Promise<string[]> {
     const dbPath = this.getDbPath(path);
+    let useOldSchema = false;
 
     // First check if the path exists and is a directory
     try {
-      // Special case for root directory
-      if (dbPath !== "." && dbPath !== "/") {
-        // Check if path exists and is a directory
-        const fileCheck = this.db.one<{ type: string }>(
-          "SELECT type FROM files WHERE path = ?",
-          [dbPath],
-        );
+      try {
+        // Try the new schema first
+        // Special case for root directory
+        if (dbPath !== "." && dbPath !== "/") {
+          // Check if path exists and is a directory
+          const fileCheck = this.db.one<{ type: string }>(
+            "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
+            [dbPath],
+          );
 
-        // If it exists but is not a directory, throw ENOTDIR
-        if (fileCheck.type !== "directory") {
-          throw createError("ENOTDIR", path, "readdir");
+          // If it exists but is not a directory, throw ENOTDIR
+          if (fileCheck.type !== "directory") {
+            throw createError("ENOTDIR", path, "readdir");
+          }
+        }
+      } catch (e) {
+        if (e.code === "ENOTDIR") {
+          throw e; // Re-throw ENOTDIR errors
+        }
+        
+        if (e.message?.includes("no such table")) {
+          // Fall back to the old schema
+          useOldSchema = true;
+          
+          // Special case for root directory
+          if (dbPath !== "." && dbPath !== "/") {
+            // Check if path exists and is a directory
+            const fileCheck = this.db.one<{ type: string }>(
+              "SELECT type FROM files WHERE path = ?",
+              [dbPath],
+            );
+
+            // If it exists but is not a directory, throw ENOTDIR
+            if (fileCheck.type !== "directory") {
+              throw createError("ENOTDIR", path, "readdir");
+            }
+          }
+        } else {
+          throw e;
         }
       }
 
@@ -172,17 +284,34 @@ export class SQLiteFSAdapter {
       let sql: string;
       let params: string[];
 
-      if (dbPath === "." || dbPath === "/") {
-        // For root directory, find entries without '/' in their path (except at the beginning)
-        sql =
-          "SELECT path FROM files WHERE path != '.' AND path != '/' AND path NOT LIKE '%/%'";
-        params = [];
+      if (useOldSchema) {
+        // Use the old schema
+        if (dbPath === "." || dbPath === "/") {
+          // For root directory, find entries without '/' in their path (except at the beginning)
+          sql =
+            "SELECT path FROM files WHERE path != '.' AND path != '/' AND path NOT LIKE '%/%'";
+          params = [];
+        } else {
+          // For other directories, find immediate children
+          const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
+          sql =
+            "SELECT path FROM files WHERE path LIKE ? AND path NOT LIKE ? AND path != ?";
+          params = [`${dirPrefix}%`, `${dirPrefix}%/%`, dbPath];
+        }
       } else {
-        // For other directories, find immediate children
-        const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
-        sql =
-          "SELECT path FROM files WHERE path LIKE ? AND path NOT LIKE ? AND path != ?";
-        params = [`${dirPrefix}%`, `${dirPrefix}%/%`, dbPath];
+        // Use the new schema
+        if (dbPath === "." || dbPath === "/") {
+          // For root directory, find entries without '/' in their path (except at the beginning)
+          sql =
+            "SELECT path FROM file_chunks WHERE chunk_index = 0 AND path != '.' AND path != '/' AND path NOT LIKE '%/%'";
+          params = [];
+        } else {
+          // For other directories, find immediate children
+          const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
+          sql =
+            "SELECT path FROM file_chunks WHERE chunk_index = 0 AND path LIKE ? AND path NOT LIKE ? AND path != ?";
+          params = [`${dirPrefix}%`, `${dirPrefix}%/%`, dbPath];
+        }
       }
 
       // Get all matching paths
@@ -212,7 +341,7 @@ export class SQLiteFSAdapter {
     try {
       // Check if path already exists
       try {
-        this.db.one("SELECT type FROM files WHERE path = ?", [dbPath]);
+        this.db.one("SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
         // If we get here, the path exists
         throw createError("EEXIST", path, "mkdir");
       } catch (error) {
@@ -228,7 +357,7 @@ export class SQLiteFSAdapter {
       if (parentPath !== "." && parentPath !== "/") {
         try {
           const parent = this.db.one<{ type: string }>(
-            "SELECT type FROM files WHERE path = ?",
+            "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
             [parentPath]
           );
           if (parent.type !== "directory") {
@@ -242,9 +371,9 @@ export class SQLiteFSAdapter {
         }
       }
 
-      // Create the directory
+      // Create the directory (only needs a metadata row with chunk_index = 0)
       this.db.exec(
-        "INSERT INTO files (path, type, mode, mtime, content) VALUES (?, 'directory', ?, ?, NULL)",
+        "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'directory', ?, ?, NULL, 0)",
         [dbPath, mode, mtime]
       );
     } catch (error) {
@@ -271,13 +400,16 @@ export class SQLiteFSAdapter {
       ? Buffer.from(data, options?.encoding as BufferEncoding)
       : Buffer.from(data);
 
+    // Calculate total size
+    const totalSize = buffer.length;
+
     try {
       // Check parent directory
       const parentPath = dirname(dbPath);
       if (parentPath !== "." && parentPath !== "/") {
         try {
           const parent = this.db.one<{ type: string }>(
-            "SELECT type FROM files WHERE path = ?",
+            "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
             [parentPath]
           );
           if (parent.type !== "directory") {
@@ -294,7 +426,7 @@ export class SQLiteFSAdapter {
       // Check if path exists and is a directory
       try {
         const existing = this.db.one<{ type: string }>(
-          "SELECT type FROM files WHERE path = ?",
+          "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
           [dbPath]
         );
         if (existing.type === "directory") {
@@ -307,11 +439,39 @@ export class SQLiteFSAdapter {
         }
       }
 
-      // Write the file (create or overwrite)
-      this.db.exec(
-        "INSERT OR REPLACE INTO files (path, type, mode, mtime, content) VALUES (?, 'file', ?, ?, ?)",
-        [dbPath, mode, mtime, buffer]
-      );
+      // Delete any existing chunks for this path
+      this.db.exec("DELETE FROM file_chunks WHERE path = ?", [dbPath]);
+
+      // If the file is small enough to fit in a single chunk
+      if (totalSize <= CHUNK_SIZE) {
+        // Write the file as a single chunk (chunk_index = 0)
+        this.db.exec(
+          "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'file', ?, ?, ?, ?)",
+          [dbPath, mode, mtime, buffer, totalSize]
+        );
+      } else {
+        // For large files, split into chunks
+        const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
+        
+        // First, insert the metadata row (chunk_index = 0) with the first chunk of data
+        const firstChunk = buffer.subarray(0, CHUNK_SIZE);
+        this.db.exec(
+          "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'file', ?, ?, ?, ?)",
+          [dbPath, mode, mtime, firstChunk, totalSize]
+        );
+        
+        // Then insert the remaining chunks
+        for (let i = 1; i < chunkCount; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, totalSize);
+          const chunk = buffer.subarray(start, end);
+          
+          this.db.exec(
+            "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, ?, 'file', ?, ?, ?, ?)",
+            [dbPath, i, mode, mtime, chunk, totalSize]
+          );
+        }
+      }
     } catch (error) {
       // If we already created a specific error, re-throw it
       if ((error as FSError).code) {
@@ -328,7 +488,7 @@ export class SQLiteFSAdapter {
     try {
       // Check if path exists and get its type
       const file = this.db.one<{ type: string }>(
-        "SELECT type FROM files WHERE path = ?",
+        "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
         [dbPath]
       );
 
@@ -337,8 +497,8 @@ export class SQLiteFSAdapter {
         throw createError("EPERM", path, "unlink");
       }
 
-      // Delete the file
-      this.db.exec("DELETE FROM files WHERE path = ?", [dbPath]);
+      // Delete all chunks for this file
+      this.db.exec("DELETE FROM file_chunks WHERE path = ?", [dbPath]);
     } catch (error) {
       // If we already created a specific error, re-throw it
       if ((error as FSError).code) {
@@ -360,7 +520,7 @@ export class SQLiteFSAdapter {
     try {
       // Check if path exists and is a directory
       const file = this.db.one<{ type: string }>(
-        "SELECT type FROM files WHERE path = ?",
+        "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
         [dbPath]
       );
 
@@ -372,8 +532,8 @@ export class SQLiteFSAdapter {
       try {
         const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
         this.db.one<{ path: string }>(
-          "SELECT path FROM files WHERE path LIKE ? LIMIT 1",
-          [`${dirPrefix}%`]
+          "SELECT path FROM file_chunks WHERE path LIKE ? AND path != ? AND chunk_index = 0 LIMIT 1",
+          [`${dirPrefix}%`, dbPath]
         );
         // If we get here, directory has at least one child
         throw createError("ENOTEMPTY", path, "rmdir");
@@ -384,8 +544,8 @@ export class SQLiteFSAdapter {
         }
       }
 
-      // Delete the directory
-      this.db.exec("DELETE FROM files WHERE path = ?", [dbPath]);
+      // Delete the directory (only the metadata row)
+      this.db.exec("DELETE FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
     } catch (error) {
       // If we already created a specific error, re-throw it
       if ((error as FSError).code) {

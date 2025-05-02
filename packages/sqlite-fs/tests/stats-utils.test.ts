@@ -11,7 +11,8 @@ describe('stats-utils', () => {
         type: 'file',
         mode: 0o100644,
         mtime: '2023-01-01T00:00:00.000Z',
-        content
+        content,
+        total_size: 5
       };
 
       const stats = createStats(row);
@@ -32,7 +33,8 @@ describe('stats-utils', () => {
         type: 'directory',
         mode: 0o40755,
         mtime: '2023-01-01T00:00:00.000Z',
-        content: null
+        content: null,
+        total_size: 0
       };
 
       const stats = createStats(row);
@@ -50,7 +52,8 @@ describe('stats-utils', () => {
         type: 'symlink',
         mode: 0o120755,
         mtime: '2023-01-01T00:00:00.000Z',
-        content
+        content,
+        total_size: 12
       };
 
       const stats = createStats(row);
@@ -66,7 +69,8 @@ describe('stats-utils', () => {
         type: 'file',
         mode: 0o100644,
         mtime: '2023-01-01T00:00:00.000Z',
-        content: null
+        content: null,
+        total_size: 0
       };
 
       const stats = createStats(row);

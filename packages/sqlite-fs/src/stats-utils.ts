@@ -6,7 +6,8 @@ export interface DbFileRow {
     type: 'file' | 'directory' | 'symlink';
     mode: number;
     mtime: string; // ISO8601 string
-    content: Buffer | Uint8Array | null; // Assuming BLOB is retrieved as Buffer/Uint8Array
+    content?: Buffer | Uint8Array | null; // Assuming BLOB is retrieved as Buffer/Uint8Array
+    total_size: number; // Total size of the file (across all chunks)
 }
 
 /**
@@ -14,8 +15,8 @@ export interface DbFileRow {
  */
 export function createStats(row: DbFileRow): Stats {
     const mtimeMs = Date.parse(row.mtime);
-    // Ensure size is calculated correctly (content length or 0 for dirs)
-    const size = row.type === 'directory' ? 0 : (row.content?.length ?? 0);
+    // Use total_size directly from the database row
+    const size = row.total_size;
 
     // Create the base object matching the Stats interface
     const stats: Stats = {
