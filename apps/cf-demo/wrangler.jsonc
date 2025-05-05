@@ -1,0 +1,25 @@
+{
+	"name": "git-durable-object-demo",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-05-01",
+	"assets": { "not_found_handling": "single-page-application" },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "READONLY_REPO",
+        "class_name": "ReadonlyRepoObject",
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ReadonlyRepoObject"
+      ]
+    }
+  ],
+	"observability": {
+		"enabled": true
+	}
+}
