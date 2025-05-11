@@ -8,7 +8,10 @@ import type { FSError, Stats } from "./types";
 
 // Helper to check if an error is a "not found" error from the database
 function isNotFoundError(error: any): boolean {
-  return error?.message?.includes("No rows found");
+  return (
+    error?.message?.includes("No rows found") ||
+    error?.message?.includes("no results")
+  );
 }
 
 export class SQLiteFSAdapter {
@@ -16,35 +19,55 @@ export class SQLiteFSAdapter {
   private rootDir: string;
 
   // Add methods directly to the adapter for isomorphic-git compatibility
-  public readFile: (path: string, options?: { encoding?: string }) => Promise<Buffer | string>;
-  public writeFile: (path: string, data: string | Buffer | Uint8Array, options?: { encoding?: string; mode?: number }) => Promise<void>;
+  public readFile: (
+    path: string,
+    options?: { encoding?: string },
+  ) => Promise<Buffer | string>;
+  public writeFile: (
+    path: string,
+    data: string | Buffer | Uint8Array,
+    options?: { encoding?: string; mode?: number },
+  ) => Promise<void>;
   public unlink: (path: string) => Promise<void>;
   public readdir: (path: string) => Promise<string[]>;
   public mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
   public rmdir: (path: string) => Promise<void>;
   public stat: (path: string) => Promise<Stats>;
   public lstat: (path: string) => Promise<Stats>;
-  public readlink: (path: string, options?: { encoding?: string }) => Promise<Buffer>;
+  public readlink: (
+    path: string,
+    options?: { encoding?: string },
+  ) => Promise<Buffer>;
   public symlink: (target: string, path: string) => Promise<void>;
-  
+
   // Add promises property for isomorphic-git compatibility
   public promises: {
-    readFile: (path: string, options?: { encoding?: string }) => Promise<Buffer | string>;
-    writeFile: (path: string, data: string | Buffer | Uint8Array, options?: { encoding?: string; mode?: number }) => Promise<void>;
+    readFile: (
+      path: string,
+      options?: { encoding?: string },
+    ) => Promise<Buffer | string>;
+    writeFile: (
+      path: string,
+      data: string | Buffer | Uint8Array,
+      options?: { encoding?: string; mode?: number },
+    ) => Promise<void>;
     unlink: (path: string) => Promise<void>;
     readdir: (path: string) => Promise<string[]>;
     mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
     rmdir: (path: string) => Promise<void>;
     stat: (path: string) => Promise<Stats>;
     lstat: (path: string) => Promise<Stats>;
-    readlink: (path: string, options?: { encoding?: string }) => Promise<Buffer>;
+    readlink: (
+      path: string,
+      options?: { encoding?: string },
+    ) => Promise<Buffer>;
     symlink: (target: string, path: string) => Promise<void>;
   };
 
   constructor(db: SyncSqliteDatabase, rootDir: string = ".") {
     this.db = db;
     this.rootDir = rootDir;
-    
+
     // Bind methods directly to the adapter for isomorphic-git compatibility
     this.readFile = this._readFile.bind(this);
     this.writeFile = this._writeFile.bind(this);
@@ -56,7 +79,7 @@ export class SQLiteFSAdapter {
     this.lstat = this._lstat.bind(this);
     this.readlink = this._readlink.bind(this);
     this.symlink = this._symlink.bind(this);
-    
+
     // Initialize the promises object with bound methods
     this.promises = {
       readFile: this._readFile.bind(this),
@@ -68,9 +91,9 @@ export class SQLiteFSAdapter {
       stat: this._stat.bind(this),
       lstat: this._lstat.bind(this),
       readlink: this._readlink.bind(this),
-      symlink: this._symlink.bind(this)
+      symlink: this._symlink.bind(this),
     };
-    
+
     // Ensure schema exists
     try {
       this.db.exec(SQL_SCHEMA);
@@ -119,7 +142,10 @@ export class SQLiteFSAdapter {
       const metadataRow = this.db.one<{
         type: string;
         total_size: number;
-      }>("SELECT type, total_size FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
+      }>(
+        "SELECT type, total_size FROM file_chunks WHERE path = ? AND chunk_index = 0",
+        [dbPath],
+      );
 
       // Check if it's a directory
       if (metadataRow.type === "directory") {
@@ -129,7 +155,10 @@ export class SQLiteFSAdapter {
       // Get all chunks for this file, ordered by chunk_index
       const chunkRows = this.db.all<{
         content: Buffer | Uint8Array | null;
-      }>("SELECT content FROM file_chunks WHERE path = ? ORDER BY chunk_index ASC", [dbPath]);
+      }>(
+        "SELECT content FROM file_chunks WHERE path = ? ORDER BY chunk_index ASC",
+        [dbPath],
+      );
 
       // Collect all content chunks
       const contentChunks: Buffer[] = [];
@@ -225,7 +254,10 @@ export class SQLiteFSAdapter {
     try {
       // Check if path already exists
       try {
-        this.db.one("SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
+        this.db.one(
+          "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
+          [dbPath],
+        );
         // If we get here, the path exists
         throw createError("EEXIST", path, "mkdir");
       } catch (error) {
@@ -242,7 +274,7 @@ export class SQLiteFSAdapter {
         try {
           const parent = this.db.one<{ type: string }>(
             "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
-            [parentPath]
+            [parentPath],
           );
           if (parent.type !== "directory") {
             throw createError("ENOTDIR", path, "mkdir");
@@ -258,7 +290,7 @@ export class SQLiteFSAdapter {
       // Create the directory (only needs a metadata row with chunk_index = 0)
       this.db.exec(
         "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'directory', ?, ?, NULL, 0)",
-        [dbPath, mode, mtime]
+        [dbPath, mode, mtime],
       );
     } catch (error) {
       // If we already created a specific error, re-throw it
@@ -273,16 +305,17 @@ export class SQLiteFSAdapter {
   async _writeFile(
     path: string,
     data: string | Buffer | Uint8Array,
-    options?: { encoding?: string; mode?: number }
+    options?: { encoding?: string; mode?: number },
   ): Promise<void> {
     const dbPath = this.getDbPath(path);
     const mode = options?.mode ?? 0o644; // Default file mode
     const mtime = new Date().toISOString();
 
     // Convert data to Buffer if it's a string
-    const buffer = typeof data === "string"
-      ? Buffer.from(data, options?.encoding as BufferEncoding)
-      : Buffer.from(data);
+    const buffer =
+      typeof data === "string"
+        ? Buffer.from(data, options?.encoding as BufferEncoding)
+        : Buffer.from(data);
 
     // Calculate total size
     const totalSize = buffer.length;
@@ -294,7 +327,7 @@ export class SQLiteFSAdapter {
         try {
           const parent = this.db.one<{ type: string }>(
             "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
-            [parentPath]
+            [parentPath],
           );
           if (parent.type !== "directory") {
             throw createError("ENOTDIR", path, "writeFile");
@@ -311,7 +344,7 @@ export class SQLiteFSAdapter {
       try {
         const existing = this.db.one<{ type: string }>(
           "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
-          [dbPath]
+          [dbPath],
         );
         if (existing.type === "directory") {
           throw createError("EISDIR", path, "writeFile");
@@ -331,28 +364,28 @@ export class SQLiteFSAdapter {
         // Write the file as a single chunk (chunk_index = 0)
         this.db.exec(
           "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'file', ?, ?, ?, ?)",
-          [dbPath, mode, mtime, buffer, totalSize]
+          [dbPath, mode, mtime, buffer, totalSize],
         );
       } else {
         // For large files, split into chunks
         const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
-        
+
         // First, insert the metadata row (chunk_index = 0) with the first chunk of data
         const firstChunk = buffer.subarray(0, CHUNK_SIZE);
         this.db.exec(
           "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, 0, 'file', ?, ?, ?, ?)",
-          [dbPath, mode, mtime, firstChunk, totalSize]
+          [dbPath, mode, mtime, firstChunk, totalSize],
         );
-        
+
         // Then insert the remaining chunks
         for (let i = 1; i < chunkCount; i++) {
           const start = i * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, totalSize);
           const chunk = buffer.subarray(start, end);
-          
+
           this.db.exec(
             "INSERT INTO file_chunks (path, chunk_index, type, mode, mtime, content, total_size) VALUES (?, ?, 'file', ?, ?, ?, ?)",
-            [dbPath, i, mode, mtime, chunk, totalSize]
+            [dbPath, i, mode, mtime, chunk, totalSize],
           );
         }
       }
@@ -373,7 +406,7 @@ export class SQLiteFSAdapter {
       // Check if path exists and get its type
       const file = this.db.one<{ type: string }>(
         "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
-        [dbPath]
+        [dbPath],
       );
 
       // If it's a directory, throw EPERM
@@ -388,11 +421,11 @@ export class SQLiteFSAdapter {
       if ((error as FSError).code) {
         throw error;
       }
-      
+
       if (isNotFoundError(error)) {
         throw createError("ENOENT", path, "unlink");
       }
-      
+
       // Other database errors
       throw createError("EIO", path, "unlink");
     }
@@ -405,7 +438,7 @@ export class SQLiteFSAdapter {
       // Check if path exists and is a directory
       const file = this.db.one<{ type: string }>(
         "SELECT type FROM file_chunks WHERE path = ? AND chunk_index = 0",
-        [dbPath]
+        [dbPath],
       );
 
       if (file.type !== "directory") {
@@ -417,7 +450,7 @@ export class SQLiteFSAdapter {
         const dirPrefix = dbPath.endsWith("/") ? dbPath : `${dbPath}/`;
         this.db.one<{ path: string }>(
           "SELECT path FROM file_chunks WHERE path LIKE ? AND path != ? AND chunk_index = 0 LIMIT 1",
-          [`${dirPrefix}%`, dbPath]
+          [`${dirPrefix}%`, dbPath],
         );
         // If we get here, directory has at least one child
         throw createError("ENOTEMPTY", path, "rmdir");
@@ -429,31 +462,36 @@ export class SQLiteFSAdapter {
       }
 
       // Delete the directory (only the metadata row)
-      this.db.exec("DELETE FROM file_chunks WHERE path = ? AND chunk_index = 0", [dbPath]);
+      this.db.exec(
+        "DELETE FROM file_chunks WHERE path = ? AND chunk_index = 0",
+        [dbPath],
+      );
     } catch (error) {
       // If we already created a specific error, re-throw it
       if ((error as FSError).code) {
         throw error;
       }
-      
+
       if (isNotFoundError(error)) {
         throw createError("ENOENT", path, "rmdir");
       }
-      
+
       // Other database errors
       throw createError("EIO", path, "rmdir");
     }
   }
-  
+
   // --- Symlink Methods (Stubs) ---
-  async _readlink(path: string, options?: { encoding?: string }): Promise<Buffer> {
+  async _readlink(
+    path: string,
+    options?: { encoding?: string },
+  ): Promise<Buffer> {
     // This is a stub implementation since we don't support symlinks
     throw createError("EINVAL", path, "readlink");
   }
-  
+
   async _symlink(target: string, path: string): Promise<void> {
     // This is a stub implementation since we don't support symlinks
     throw createError("EPERM", path, "symlink");
   }
 }
-

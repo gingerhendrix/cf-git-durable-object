@@ -2,6 +2,9 @@
   "name": "sqlite-fs",
   "module": "src/index.ts",
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "build": "bun build src/index.ts --outdir=dist --format=esm",
     "typecheck": "tsc --noEmit",

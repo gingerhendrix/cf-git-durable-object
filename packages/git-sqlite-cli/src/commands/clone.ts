@@ -1,8 +1,6 @@
 // src/commands/clone.ts
-import {
-  BunSqliteAdapter,
-  SQLiteFSAdapter,
-} from "../../../sqlite-fs/src/index.js";
+import { SQLiteFSAdapter } from "../../../sqlite-fs/src/index.js";
+import { BunSqliteAdapter } from "../../../sqlite-fs/src/bun-sqlite-adapter.js"; // Import BunSqliteAdapter
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/node"; // Using Node's HTTP client via Bun
 import path from "node:path";
@@ -97,4 +95,3 @@ export async function cloneCommand(
     }
   }
 }
-
