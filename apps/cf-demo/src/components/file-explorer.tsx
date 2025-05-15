@@ -151,7 +151,7 @@ export function FileExplorer({
   };
 
   return (
-    <div className={cn("w-80 border-r flex flex-col h-full")}>
+    <div className="w-1/4 max-w-[30em] border-r flex flex-col h-full">
       {getBreadcrumbs()}
       <ScrollArea className="flex-1">
         <div className="p-2">{renderFileTree(files, currentPath)}</div>
