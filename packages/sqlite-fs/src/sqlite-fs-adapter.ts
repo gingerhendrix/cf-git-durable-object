@@ -1,24 +1,39 @@
 // src/sqlite-fs-adapter.ts
 import { createError } from "./error-utils";
-import type { SyncSqliteDatabase } from "./interfaces";
+import type { NoRowsError, SyncSqliteDatabase } from "./interfaces";
 import { basename, dirname, normalize } from "./path-utils";
 import { CHUNK_SIZE, SQL_SCHEMA } from "./schema";
 import { createStats, type DbFileRow } from "./stats-utils";
 import type { FSError, Stats } from "./types";
 
 // Helper to check if an error is a "not found" error from the database
-function isNotFoundError(error: any): boolean {
-  return (
-    error?.message?.includes("No rows found") ||
-    error?.message?.includes("no results")
-  );
+function isNotFoundError(error: any): error is NoRowsError {
+  return error?.name === "NoRowsError";
 }
 
-export class SQLiteFSAdapter {
-  private db: SyncSqliteDatabase;
-  private rootDir: string;
+export interface FileSystem {
+  readFile: (
+    path: string,
+    options?: { encoding?: string },
+  ) => Promise<Buffer | string>;
+  writeFile: (
+    path: string,
+    data: string | Buffer | Uint8Array,
+    options?: { encoding?: string; mode?: number },
+  ) => Promise<void>;
+  unlink: (path: string) => Promise<void>;
+  readdir: (path: string) => Promise<string[]>;
+  mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
+  rmdir: (path: string) => Promise<void>;
+  stat: (path: string) => Promise<Stats>;
+  lstat: (path: string) => Promise<Stats>;
+  readlink: (path: string, options?: { encoding?: string }) => Promise<Buffer>;
+  symlink: (target: string, path: string) => Promise<void>;
+}
 
-  // Add methods directly to the adapter for isomorphic-git compatibility
+export class SQLiteFSAdapter implements FileSystem {
+  private db: SyncSqliteDatabase;
+
   public readFile: (
     path: string,
     options?: { encoding?: string },
@@ -41,32 +56,10 @@ export class SQLiteFSAdapter {
   public symlink: (target: string, path: string) => Promise<void>;
 
   // Add promises property for isomorphic-git compatibility
-  public promises: {
-    readFile: (
-      path: string,
-      options?: { encoding?: string },
-    ) => Promise<Buffer | string>;
-    writeFile: (
-      path: string,
-      data: string | Buffer | Uint8Array,
-      options?: { encoding?: string; mode?: number },
-    ) => Promise<void>;
-    unlink: (path: string) => Promise<void>;
-    readdir: (path: string) => Promise<string[]>;
-    mkdir: (path: string, options?: { mode?: number }) => Promise<void>;
-    rmdir: (path: string) => Promise<void>;
-    stat: (path: string) => Promise<Stats>;
-    lstat: (path: string) => Promise<Stats>;
-    readlink: (
-      path: string,
-      options?: { encoding?: string },
-    ) => Promise<Buffer>;
-    symlink: (target: string, path: string) => Promise<void>;
-  };
+  public promises: FileSystem;
 
-  constructor(db: SyncSqliteDatabase, rootDir: string = ".") {
+  constructor(db: SyncSqliteDatabase) {
     this.db = db;
-    this.rootDir = rootDir;
 
     // Bind methods directly to the adapter for isomorphic-git compatibility
     this.readFile = this._readFile.bind(this);
@@ -484,13 +477,13 @@ export class SQLiteFSAdapter {
   // --- Symlink Methods (Stubs) ---
   async _readlink(
     path: string,
-    options?: { encoding?: string },
+    _options?: { encoding?: string },
   ): Promise<Buffer> {
     // This is a stub implementation since we don't support symlinks
     throw createError("EINVAL", path, "readlink");
   }
 
-  async _symlink(target: string, path: string): Promise<void> {
+  async _symlink(_target: string, path: string): Promise<void> {
     // This is a stub implementation since we don't support symlinks
     throw createError("EPERM", path, "symlink");
   }

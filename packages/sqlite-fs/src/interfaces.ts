@@ -4,7 +4,8 @@
  * Interface for a synchronous iterator over SQLite query results.
  * Adheres to the standard JavaScript Iterable/Iterator protocol.
  */
-export interface SyncSqliteIterator<T = Record<string, any>> extends Iterable<T> {
+export interface SyncSqliteIterator<T = Record<string, any>>
+  extends Iterable<T> {
   /** Returns the next item in the sequence. */
   next(): IteratorResult<T>;
 }
@@ -23,8 +24,26 @@ export interface SyncSqliteDatabase {
   one<T = Record<string, any>>(sql: string, params?: any[]): T;
 
   /** Executes SELECT, returns a synchronous iterator over result rows. Throws on error during prep/execution. */
-  iterator<T = Record<string, any>>(sql: string, params?: any[]): SyncSqliteIterator<T>;
+  iterator<T = Record<string, any>>(
+    sql: string,
+    params?: any[],
+  ): SyncSqliteIterator<T>;
 
   /** Optional: Closes the database connection if applicable. */
   close?(): void;
 }
+
+export class NoRowsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoRowsError";
+  }
+}
+
+export class TooManyRowsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TooManyRowsError";
+  }
+}
+

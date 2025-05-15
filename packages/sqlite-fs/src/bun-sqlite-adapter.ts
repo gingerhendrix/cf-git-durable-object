@@ -1,6 +1,7 @@
 // src/bun-sqlite-adapter.ts
 import { Database } from "bun:sqlite";
 import type { SyncSqliteDatabase, SyncSqliteIterator } from "./interfaces";
+import { NoRowsError, TooManyRowsError } from "./interfaces";
 
 export class BunSqliteAdapter implements SyncSqliteDatabase {
   private db: Database;
@@ -31,10 +32,10 @@ export class BunSqliteAdapter implements SyncSqliteDatabase {
     try {
       const results = this.db.query(sql).all(...(params ?? []));
       if (results.length === 0) {
-        throw new Error("SQLite one() error: No rows found");
+        throw new NoRowsError("SQLite one() error: No rows found");
       }
       if (results.length > 1) {
-        throw new Error(
+        throw new TooManyRowsError(
           `SQLite one() error: Expected 1 row, got ${results.length}`,
         );
       }
@@ -65,4 +66,3 @@ export class BunSqliteAdapter implements SyncSqliteDatabase {
     this.db.close();
   }
 }
-
