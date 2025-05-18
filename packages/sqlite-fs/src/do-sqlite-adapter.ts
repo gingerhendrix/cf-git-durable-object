@@ -2,7 +2,12 @@ import type {
   DurableObjectStorage,
   SqlStorage,
 } from "@cloudflare/workers-types";
-import type { SyncSqliteDatabase, SyncSqliteIterator } from "sqlite-fs";
+import {
+  NoRowsError,
+  TooManyRowsError,
+  type SyncSqliteDatabase,
+  type SyncSqliteIterator,
+} from "sqlite-fs";
 import { getErrorMessage } from "./errors";
 
 export class DurableObjectSqliteAdapter implements SyncSqliteDatabase {
@@ -41,12 +46,19 @@ export class DurableObjectSqliteAdapter implements SyncSqliteDatabase {
   }
 
   one<T = Record<string, any>>(sql: string, params?: any[]): T {
+    let results;
     try {
-      return this.sql.exec(sql, ...(params ?? [])).one() as T;
+      results = this.sql.exec(sql, ...(params ?? [])).toArray();
     } catch (e) {
       console.error(`DO Adapter one Error: ${getErrorMessage(e)}`, sql, params);
       throw e;
     }
+    if (results.length === 0) {
+      throw new NoRowsError("No rows found");
+    } else if (results.length > 1) {
+      throw new TooManyRowsError("Too many rows found");
+    }
+    return results[0] as T;
   }
 
   iterator<T = Record<string, any>>(

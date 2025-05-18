@@ -3,7 +3,9 @@
   "module": "src/index.ts",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bun": "./src/bun-sqlite-adapter.ts",
+    "./do": "./src/do-sqlite-adapter.ts"
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir=dist --format=esm",

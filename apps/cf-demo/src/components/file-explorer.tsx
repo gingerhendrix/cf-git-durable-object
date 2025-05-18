@@ -1,7 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileEntry } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { formatDistance, parseISO } from "date-fns";
 import {
   ChevronDown,
@@ -57,7 +56,7 @@ export function FileExplorer({
     }
   };
 
-  const renderFileTree = (structure: FileEntry[], basePath: string[] = []) => {
+  const renderFileTree = (structure: FileEntry[]) => {
     return structure.map((entry) => {
       const path = entry.path.split("/");
       const isExpanded = expandedFolders[entry.path];
@@ -154,7 +153,7 @@ export function FileExplorer({
     <div className="w-1/4 max-w-[30em] border-r flex flex-col h-full">
       {getBreadcrumbs()}
       <ScrollArea className="flex-1">
-        <div className="p-2">{renderFileTree(files, currentPath)}</div>
+        <div className="p-2">{renderFileTree(files)}</div>
       </ScrollArea>
     </div>
   );

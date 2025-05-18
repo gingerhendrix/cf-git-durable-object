@@ -1,9 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
-import git from "isomorphic-git";
+import git, { GitProgressEvent } from "isomorphic-git";
 import http from "isomorphic-git/http/web";
-import { DurableObjectSqliteAdapter } from "../lib/do-sqlite-adapter";
+import { DurableObjectSqliteAdapter } from "sqlite-fs/do";
 import { SQLiteFSAdapter } from "sqlite-fs";
-import { walkTree } from "../lib/walk-tree";
+import { FileEntry, walkTree } from "../lib/walk-tree";
 
 export class ReadonlyRepoObject extends DurableObject {
   private repoName: string;
@@ -31,7 +31,7 @@ export class ReadonlyRepoObject extends DurableObject {
   async clone() {
     const repoUrl = `https://github.com/${this.repoName}.git`;
     const onMessage = (message: string) => console.log(message);
-    const onProgress = (progress: any) => {
+    const onProgress = (progress: GitProgressEvent) => {
       if (
         progress.phase &&
         progress.loaded !== undefined &&
@@ -58,12 +58,12 @@ export class ReadonlyRepoObject extends DurableObject {
     console.log("Clone completed successfully.");
   }
 
-  async listFiles() {
+  async listFiles(): Promise<FileEntry[]> {
     const files = await walkTree({
       fs: this.fsAdapter,
       repoDir: ".",
     });
-    return files;
+    return files || [];
   }
 
   async getBlob(oid: string) {

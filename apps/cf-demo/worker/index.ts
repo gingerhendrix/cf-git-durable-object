@@ -1,15 +1,12 @@
 import { Hono, HonoRequest } from "hono";
 import { env } from "cloudflare:workers";
-import { ReadonlyRepoObject } from "./do/readonly-repo-object";
-export { ReadonlyRepoObject } from "./do/readonly-repo-object";
+
 const app = new Hono();
 
 async function getRepoObject(request: HonoRequest) {
   const repoName = `${request.param("user")}/${request.param("repo")}`;
   const id = env.READONLY_REPO.idFromName(repoName);
-  const stub = env.READONLY_REPO.get(
-    id,
-  ) as DurableObjectStub<ReadonlyRepoObject>;
+  const stub = env.READONLY_REPO.get(id);
   await stub.initialize(repoName);
   return stub;
 }
@@ -39,5 +36,7 @@ app.get("/api/:user/:repo/blob/:oid", async (c) => {
   const contents = new TextDecoder().decode(blob.blob);
   return c.json({ blob: contents });
 });
+
+export { ReadonlyRepoObject } from "./do/readonly-repo-object";
 
 export default app;

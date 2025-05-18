@@ -1,7 +1,7 @@
 import * as git from "isomorphic-git";
-import path from "node:path";
+import path from "path";
 
-type FileEntry = {
+export type FileEntry = {
   path: string;
   name: string;
   type: "file" | "directory";
@@ -16,7 +16,7 @@ export async function walkTree({
 }: {
   repoDir: string;
   fs: git.FsClient;
-}) {
+}): Promise<FileEntry[] | null> {
   const cache = {};
 
   async function map(
