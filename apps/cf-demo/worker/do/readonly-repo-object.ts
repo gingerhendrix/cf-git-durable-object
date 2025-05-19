@@ -194,6 +194,9 @@ export class ReadonlyRepoObject extends DurableObject {
     if (this._commitInfo) {
       return this._commitInfo;
     }
+    if (this.status !== "ready") {
+      return undefined;
+    }
     const branch = await git.currentBranch({
       fs: this.fsAdapter,
       dir: ".",
