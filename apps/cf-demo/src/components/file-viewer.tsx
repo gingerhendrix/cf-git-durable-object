@@ -23,9 +23,6 @@ export function FileViewer({ fileContent, fileEntry }: FileViewerProps) {
       <div className="border-b p-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-medium">{fileEntry.name}</span>
-          <span className="text-xs text-muted-foreground">
-            Last commit: {fileEntry.lastCommit}
-          </span>
         </div>
       </div>
 

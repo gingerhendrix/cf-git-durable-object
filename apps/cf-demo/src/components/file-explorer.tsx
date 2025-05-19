@@ -1,14 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileEntry } from "@/lib/types";
-import { formatDistance, parseISO } from "date-fns";
-import {
-  ChevronDown,
-  ChevronRight,
-  File,
-  Folder,
-  GitCommit,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
 import { useState } from "react";
 
 interface FileExplorerProps {
@@ -26,9 +19,7 @@ export function FileExplorer({
 }: FileExplorerProps) {
   const [expandedFolders, setExpandedFolders] = useState<
     Record<string, boolean>
-  >({
-    src: true,
-  });
+  >({});
 
   const toggleFolder = (path: string) => {
     setExpandedFolders((prev) => ({
@@ -58,7 +49,6 @@ export function FileExplorer({
 
   const renderFileTree = (structure: FileEntry[]) => {
     return structure.map((entry) => {
-      const path = entry.path.split("/");
       const isExpanded = expandedFolders[entry.path];
 
       if (entry.type === "directory") {
@@ -85,17 +75,9 @@ export function FileExplorer({
               </Button>
               <Folder className="h-4 w-4 text-muted-foreground mr-1" />
               <span className="text-sm">{entry.name}</span>
-              <span className="ml-auto text-xs text-muted-foreground hidden group-hover:inline-flex items-center gap-1">
-                <GitCommit className="h-3 w-3" />
-                {formatDistance(parseISO(entry.lastCommit), new Date(), {
-                  addSuffix: true,
-                })}
-              </span>
             </div>
             {isExpanded && (
-              <div className="pl-4">
-                {renderFileTree(entry.children || [], path)}
-              </div>
+              <div className="pl-4">{renderFileTree(entry.children || [])}</div>
             )}
           </div>
         );
@@ -108,12 +90,6 @@ export function FileExplorer({
           >
             <File className="h-4 w-4 text-muted-foreground mr-1" />
             <span className="text-sm">{entry.name}</span>
-            <span className="ml-auto text-xs text-muted-foreground hidden group-hover:inline-flex items-center gap-1">
-              <GitCommit className="h-3 w-3" />
-              {formatDistance(parseISO(entry.lastCommit), new Date(), {
-                addSuffix: true,
-              })}
-            </span>
           </div>
         );
       }

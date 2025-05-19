@@ -24,7 +24,6 @@ export class DurableObjectSqliteAdapter implements SyncSqliteDatabase {
 
   exec(sql: string, params?: any[]): void {
     try {
-      console.log("Exec", sql, params);
       this.sql.exec(sql, ...(params ?? [])).toArray();
     } catch (e) {
       console.error(

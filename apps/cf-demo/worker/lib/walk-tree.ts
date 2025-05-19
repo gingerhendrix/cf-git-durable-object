@@ -5,7 +5,6 @@ export type FileEntry = {
   path: string;
   name: string;
   type: "file" | "directory";
-  lastCommit: Date;
   children?: FileEntry[];
   oid: string;
 };
@@ -33,25 +32,6 @@ export async function walkTree({
 
     const mappedType = entryType === "tree" ? "directory" : "file";
 
-    let lastCommitDate = new Date(0);
-    try {
-      const commits = await git.log({
-        fs,
-        dir: repoDir,
-        filepath,
-        depth: 1,
-        ref: "HEAD",
-        cache,
-      });
-      if (commits.length > 0 && commits[0].commit.author) {
-        lastCommitDate = new Date(commits[0].commit.author.timestamp * 1000);
-      }
-    } catch (error) {
-      console.warn(
-        `Could not get log for ${filepath}: ${(error as Error).message}`,
-      );
-    }
-
     const name =
       filepath === "."
         ? path.basename(repoDir) || "root"
@@ -61,7 +41,6 @@ export async function walkTree({
       path: filepath,
       name: name,
       type: mappedType,
-      lastCommit: lastCommitDate,
       oid: await entry.oid(),
     };
   }

@@ -1,5 +1,5 @@
-import { Hono, HonoRequest } from "hono";
 import { env } from "cloudflare:workers";
+import { Hono, type HonoRequest } from "hono";
 
 const app = new Hono();
 
@@ -16,6 +16,19 @@ app.get("/api/:user/:repo/status", async (c) => {
   const stub = await getRepoObject(c.req);
   const status = await stub.status();
   return c.json({ status });
+});
+
+app.get("/api/:user/:repo/ws", async (c) => {
+  const upgradeHeader = c.req.header("Upgrade");
+  if (!upgradeHeader || upgradeHeader !== "websocket") {
+    return new Response("Durable Object expected Upgrade: websocket", {
+      status: 426,
+    });
+  }
+
+  const stub = await getRepoObject(c.req);
+
+  return stub.fetch(c.req.raw);
 });
 
 app.post("/api/:user/:repo/clone", async (c) => {
