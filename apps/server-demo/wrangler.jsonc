@@ -1,0 +1,32 @@
+{
+	"name": "git-durable-object-demo",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-05-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+	"assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": false
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SERVABLE_REPO",
+        "class_name": "ServableRepoObject",
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ServableRepoObject"
+      ]
+    }
+  ],
+	"observability": {
+		"enabled": true
+	}
+}
