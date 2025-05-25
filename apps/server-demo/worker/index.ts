@@ -45,18 +45,57 @@ app.get("/api/:user/:repo/blob/:oid", async (c) => {
   return c.json({ blob: contents });
 });
 
+// Git dumb protocol endpoints
 app.get("/:user/:repo/HEAD", async (c) => {
-  return c.json({ status: "ok" });
+  const stub = await getRepoObject(c.req);
+  const head = await stub.getHead();
+  console.log("HEAD:", head);
+  return new Response(head, {
+    headers: { "Content-Type": "text/plain" },
+  });
+});
+
+app.get("/:user/:repo/info/refs", async (c) => {
+  const stub = await getRepoObject(c.req);
+  const refs = await stub.getRefs();
+  console.log("Refs:", refs);
+  return new Response(refs, {
+    headers: {
+      "Content-Type": "text/plain",
+      "Cache-Control": "no-cache",
+    },
+  });
+});
+
+app.get("/:user/:repo/objects/:dir/:file", async (c) => {
+  const stub = await getRepoObject(c.req);
+  const dir = c.req.param("dir");
+  const file = c.req.param("file");
+  const objectId = dir + file;
+
+  try {
+    const object = await stub.getObject(objectId);
+    console.log("Object found", objectId);
+    return new Response(object, {
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+  } catch (error) {
+    console.log("Object not found", objectId, error);
+    return new Response("Not Found", { status: 404 });
+  }
+});
+
+app.get("/:user/:repo/objects/info/packs", async (c) => {
+  const stub = await getRepoObject(c.req);
+  const packs = await stub.getPacks();
+  return new Response(packs, {
+    headers: { "Content-Type": "text/plain" },
+  });
 });
 
 app.get("/studio", async (c) => {
   return await studio(c.req.raw, env.SERVABLE_REPO, {});
 });
-
-//app.get("/:user/:repo/info/refs", async (c) => {});
-//app.get("/:user/:repo/objects/:dir/:file", async (c) => {});
-
-//app.get("/:user/:repo/objects/info/packs", async (c) => {});
 
 export { ServableRepoObject } from "./do/servable-repo-object";
 
