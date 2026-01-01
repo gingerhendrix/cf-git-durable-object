@@ -9,8 +9,29 @@ import * as pako from "pako";
 import { SQLiteFSAdapter } from "sqlite-fs";
 import { DurableObjectSqliteAdapter } from "sqlite-fs/do";
 import { type FileEntry, walkTree } from "../lib/walk-tree";
+import {
+  concatBytes,
+  decodePktText,
+  encodePktFlush,
+  encodePktLine,
+  readPktLinesUntilFlush,
+} from "../lib/pkt-line";
 
 type STATUS = "new" | "cloning" | "ready" | "fetching" | "error";
+
+type RefUpdate = {
+  oldOid: string;
+  newOid: string;
+  ref: string;
+};
+
+type RefUpdateResult =
+  | { ref: string; status: "ok" }
+  | { ref: string; status: "ng"; reason: string };
+
+const ZERO_OID = "0".repeat(40);
+const MAX_PACK_SIZE = 30 * 1024 * 1024;
+const RECEIVE_PACK_AGENT = "cf-git/1.0";
 
 export interface Message {
   type: string;
@@ -351,6 +372,83 @@ export class ServableRepoObject extends DurableObject {
     return "";
   }
 
+  async getReceivePackAdvertisement(): Promise<Uint8Array> {
+    await this.ensureGitRepoInitialized();
+
+    const serviceHeader = concatBytes([
+      encodePktLine("# service=git-receive-pack\n"),
+      encodePktFlush(),
+    ]);
+
+    const refs = await this.listRefsForAdvertisement();
+    const headTarget = await this.getHeadTargetRef();
+
+    const capabilities = [
+      "report-status",
+      "delete-refs",
+      "ofs-delta",
+      `symref=HEAD:${headTarget}`,
+      `agent=${RECEIVE_PACK_AGENT}`,
+    ].join(" ");
+
+    const advertised: Array<{ oid: string; name: string }> = [];
+    const headOid = await this.resolveRefOrZero("HEAD");
+    if (headOid !== ZERO_OID) {
+      advertised.push({ oid: headOid, name: "HEAD" });
+    }
+    advertised.push(...refs);
+
+    const pktLines: Uint8Array[] = [];
+    if (advertised.length === 0) {
+      pktLines.push(
+        encodePktLine(`${ZERO_OID} capabilities^{}\0${capabilities}\n`),
+      );
+    } else {
+      const [first, ...rest] = advertised;
+      pktLines.push(encodePktLine(`${first.oid} ${first.name}\0${capabilities}\n`));
+      for (const ref of rest) {
+        pktLines.push(encodePktLine(`${ref.oid} ${ref.name}\n`));
+      }
+    }
+    pktLines.push(encodePktFlush());
+
+    return concatBytes([serviceHeader, ...pktLines]);
+  }
+
+  async receivePack(data: Uint8Array): Promise<Uint8Array> {
+    await this.ensureGitRepoInitialized();
+
+    const { lines: commandLines, offset } = readPktLinesUntilFlush(data, 0);
+    const commandsText = commandLines.map(decodePktText);
+    const updates = this.parseRefUpdates(commandsText);
+
+    const remaining = data.slice(offset);
+    const hasPack =
+      remaining.length >= 4 &&
+      remaining[0] === 0x50 &&
+      remaining[1] === 0x41 &&
+      remaining[2] === 0x43 &&
+      remaining[3] === 0x4b;
+
+    const unpackResult = hasPack
+      ? await this.processPackfile(remaining)
+      : { ok: true as const };
+
+    const refResults = unpackResult.ok
+      ? await this.updateRefs(updates)
+      : updates.map((u) => ({
+          ref: u.ref,
+          status: "ng" as const,
+          reason: "unpack failed",
+        }));
+
+    if (unpackResult.ok) {
+      await this.maybeUpdateHeadAfterPush(refResults);
+    }
+
+    return this.buildReportStatus(unpackResult, refResults);
+  }
+
   async getStatus(): Promise<STATUS> {
     return this.status;
   }
@@ -399,5 +497,255 @@ export class ServableRepoObject extends DurableObject {
     const dbAdapter = new DurableObjectSqliteAdapter(this.ctx.storage);
     this._fsAdapter = new SQLiteFSAdapter(dbAdapter);
     return this._fsAdapter;
+  }
+
+  private async ensureGitRepoInitialized(): Promise<void> {
+    try {
+      await this.fsAdapter.stat(".git");
+      return;
+    } catch {
+      // Fall through to init
+    }
+
+    try {
+      // defaultBranch is supported by modern isomorphic-git.
+      await git.init({
+        fs: this.fsAdapter,
+        dir: ".",
+        defaultBranch: "main",
+      } as any);
+    } catch (error) {
+      // If init fails due to unexpected option shape, retry with the minimal call.
+      await git.init({
+        fs: this.fsAdapter,
+        dir: ".",
+      } as any);
+    }
+  }
+
+  private async resolveRefOrZero(ref: string): Promise<string> {
+    try {
+      return await git.resolveRef({
+        fs: this.fsAdapter,
+        dir: ".",
+        ref,
+      });
+    } catch {
+      return ZERO_OID;
+    }
+  }
+
+  private async getHeadTargetRef(): Promise<string> {
+    try {
+      const branch = await git.currentBranch({
+        fs: this.fsAdapter,
+        dir: ".",
+      });
+      if (branch) return `refs/heads/${branch}`;
+    } catch {
+      // ignore
+    }
+    return "refs/heads/main";
+  }
+
+  private async listRefsForAdvertisement(): Promise<
+    Array<{ oid: string; name: string }>
+  > {
+    const advertised: Array<{ oid: string; name: string }> = [];
+    try {
+      const branches = await git.listBranches({
+        fs: this.fsAdapter,
+        dir: ".",
+      });
+      for (const branch of branches) {
+        const oid = await this.resolveRefOrZero(`refs/heads/${branch}`);
+        if (oid !== ZERO_OID) {
+          advertised.push({ oid, name: `refs/heads/${branch}` });
+        }
+      }
+
+      const tags = await git.listTags({
+        fs: this.fsAdapter,
+        dir: ".",
+      });
+      for (const tag of tags) {
+        const tagRef = `refs/tags/${tag}`;
+        const oid = await this.resolveRefOrZero(tagRef);
+        if (oid !== ZERO_OID) {
+          advertised.push({ oid, name: tagRef });
+        }
+
+        // Peeled ref for annotated tags
+        if (oid !== ZERO_OID) {
+          try {
+            const tagObject = await git.readTag({
+              fs: this.fsAdapter,
+              dir: ".",
+              oid,
+            });
+            if (tagObject.object && tagObject.object !== oid) {
+              advertised.push({ oid: tagObject.object, name: `${tagRef}^{}` });
+            }
+          } catch {
+            // Not an annotated tag
+          }
+        }
+      }
+    } catch {
+      // If listing refs fails, advertise nothing beyond capabilities.
+    }
+
+    advertised.sort((a, b) => a.name.localeCompare(b.name));
+    return advertised;
+  }
+
+  private parseRefUpdates(commandLines: string[]): RefUpdate[] {
+    const updates: RefUpdate[] = [];
+    for (let i = 0; i < commandLines.length; i++) {
+      const line = commandLines[i];
+      const trimmed = line.endsWith("\n") ? line.slice(0, -1) : line;
+      const [commandPart] = i === 0 ? trimmed.split("\0") : [trimmed];
+      if (!commandPart) continue;
+      const parts = commandPart.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+      const [oldOid, newOid, ref] = parts;
+      updates.push({ oldOid, newOid, ref });
+    }
+    return updates;
+  }
+
+  private async processPackfile(
+    packData: Uint8Array,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (packData.length > MAX_PACK_SIZE) {
+      return { ok: false, error: "error: pack too large" };
+    }
+
+    try {
+      await this.ensureDir(".git/objects/pack");
+      const filename = `incoming-${Date.now()}-${Math.random().toString(16).slice(2)}.pack`;
+      const packPath = `.git/objects/pack/${filename}`;
+      await this.fsAdapter.writeFile(packPath, packData);
+
+      await git.indexPack({
+        fs: this.fsAdapter,
+        dir: ".",
+        filepath: packPath,
+      } as any);
+      return { ok: true };
+    } catch (error: any) {
+      console.error("indexPack failed", error);
+      return { ok: false, error: `error: ${error?.message || "index-pack failed"}` };
+    }
+  }
+
+  private async ensureDir(path: string): Promise<void> {
+    const parts = path.split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      try {
+        await this.fsAdapter.mkdir(current);
+      } catch (error: any) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+    }
+  }
+
+  private async updateRefs(updates: RefUpdate[]): Promise<RefUpdateResult[]> {
+    const results: RefUpdateResult[] = [];
+    for (const update of updates) {
+      const { oldOid, newOid, ref } = update;
+
+      if (!ref.startsWith("refs/")) {
+        results.push({ ref, status: "ng", reason: "invalid ref" });
+        continue;
+      }
+
+      const currentOid = await this.resolveRefOrZero(ref);
+      if (oldOid !== currentOid) {
+        results.push({ ref, status: "ng", reason: "non-fast-forward" });
+        continue;
+      }
+
+      try {
+        if (newOid === ZERO_OID) {
+          await git.deleteRef({
+            fs: this.fsAdapter,
+            dir: ".",
+            ref,
+          } as any);
+        } else {
+          await git.writeRef({
+            fs: this.fsAdapter,
+            dir: ".",
+            ref,
+            value: newOid,
+            force: true,
+          } as any);
+        }
+        results.push({ ref, status: "ok" });
+      } catch (error: any) {
+        results.push({
+          ref,
+          status: "ng",
+          reason: error?.message || "ref update failed",
+        });
+      }
+    }
+    return results;
+  }
+
+  private buildReportStatus(
+    unpack:
+      | { ok: true }
+      | {
+          ok: false;
+          error: string;
+        },
+    refResults: RefUpdateResult[],
+  ): Uint8Array {
+    const lines: Uint8Array[] = [];
+    if (unpack.ok) {
+      lines.push(encodePktLine("unpack ok\n"));
+    } else {
+      lines.push(encodePktLine(`unpack ${unpack.error}\n`));
+    }
+
+    for (const result of refResults) {
+      if (result.status === "ok") {
+        lines.push(encodePktLine(`ok ${result.ref}\n`));
+      } else {
+        lines.push(encodePktLine(`ng ${result.ref} ${result.reason}\n`));
+      }
+    }
+    lines.push(encodePktFlush());
+    return concatBytes(lines);
+  }
+
+  private async maybeUpdateHeadAfterPush(
+    results: RefUpdateResult[],
+  ): Promise<void> {
+    const headOid = await this.resolveRefOrZero("HEAD");
+    if (headOid !== ZERO_OID) {
+      return;
+    }
+
+    // HEAD is either unborn or points at a missing ref. Prefer pointing HEAD at a
+    // successfully-updated branch (ideally refs/heads/main).
+    const headCandidates = results
+      .filter((r): r is { ref: string; status: "ok" } => r.status === "ok")
+      .map((r) => r.ref)
+      .filter((ref) => ref.startsWith("refs/heads/"));
+    if (headCandidates.length === 0) return;
+
+    const target =
+      headCandidates.find((r) => r === "refs/heads/main") ?? headCandidates[0];
+
+    try {
+      await this.fsAdapter.writeFile(".git/HEAD", `ref: ${target}\n`);
+    } catch {
+      // ignore
+    }
   }
 }

@@ -57,11 +57,34 @@ app.get("/:user/:repo/HEAD", async (c) => {
 
 app.get("/:user/:repo/info/refs", async (c) => {
   const stub = await getRepoObject(c.req);
+  const service = c.req.query("service");
+  if (service === "git-receive-pack") {
+    const advertisement = await stub.getReceivePackAdvertisement();
+    return new Response(advertisement, {
+      headers: {
+        "Content-Type": "application/x-git-receive-pack-advertisement",
+        "Cache-Control": "no-cache",
+      },
+    });
+  }
+
   const refs = await stub.getRefs();
   console.log("Refs:", refs);
   return new Response(refs, {
     headers: {
       "Content-Type": "text/plain",
+      "Cache-Control": "no-cache",
+    },
+  });
+});
+
+app.post("/:user/:repo/git-receive-pack", async (c) => {
+  const stub = await getRepoObject(c.req);
+  const body = new Uint8Array(await c.req.arrayBuffer());
+  const result = await stub.receivePack(body);
+  return new Response(result, {
+    headers: {
+      "Content-Type": "application/x-git-receive-pack-result",
       "Cache-Control": "no-cache",
     },
   });

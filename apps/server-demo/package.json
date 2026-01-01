@@ -24,6 +24,7 @@
     "date-fns": "^4.1.0",
     "highlight.js": "^11.11.1",
     "hono": "^4.7.8",
+    "isomorphic-git": "^1.36.1",
     "lucide-react": "^0.509.0",
     "pako": "^2.1.0",
     "react": "^19.0.0",
