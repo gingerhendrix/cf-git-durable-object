@@ -1,3 +1,5 @@
+**SUPERSEDED**: Cloudflare now have native git with [Artifacts](https://developers.cloudflare.com/artifacts/)
+
 # Git Durable Object Demo
 
 This is a proof of concept for using isomorphic-git with Cloudflare Durable Objects to create a Git repository that is backed by a SQLite database.
